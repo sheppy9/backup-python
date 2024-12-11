@@ -7,7 +7,8 @@ import asyncio
 from pathlib import Path
 from datetime import datetime
 
-SOURCE_FILE = 'files.csv'
+current_dir = os.path.dirname(__file__)
+SOURCE_FILE = f'{current_dir}/files.csv'
 BACKUP_DIR = './backup'
 DATE_TIME_FORMAT = '%Y%m%d %H%M%S'
 

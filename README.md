@@ -23,3 +23,11 @@ The following configuration can be updated according to preference, configuratio
 - Move to desired location
 - Executing script by running `python backup.py`
 	- script will automatically asked for source and destination for initial setup (if files.csv not found)
+
+# Setting cron job in linux
+- Run `crontab -e`
+	- When prompted editor use `nano`
+- Insert the following
+	- `0 21 * * * /usr/bin/python3 /home/linux/git/backup-python/backup.py`
+- Save the file
+- NOTE: use `select-editor` to change editor accordingly
