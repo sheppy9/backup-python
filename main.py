@@ -1,85 +1,130 @@
-import re
 import os
 import shutil
-
-from glob import glob
 from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
+# Load environment variables once at module level
 load_dotenv()
+CONFIG = os.getenv('CONFIG', 'files.csv')
+DT_FORMAT = os.getenv('DT_FORMAT', '%Y%m%d-%H%M%S')
+DEFAULT_BACKUP_DIR = os.getenv('DEFAULT_BACKUP_DIR', '.')
 
-def get_files(config):
-	files = []
-	if config is None or len(config) == 0:
-		return files
 
-	path = Path(config).expanduser()
-	if not path.exists() or not path.is_file():
-		print(f'FileNotFound. {path}')
-		return files
+def parse_config(config_path):
+    path = Path(config_path).expanduser()
+    if not path.is_file():
+        print(f'FileNotFound. {path}')
+        return []
 
-	with path.open() as infile:
-		for line in infile.readlines()[1:]:
-			yield line.strip()
+    pairs = []
+    try:
+        with path.open('r') as f:
+            # Skip header line
+            next(f, None)
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
 
-def get_from_src(src):
-	if src is None:
-		return []
-	if src.is_file():
-		# if it's file, return None
-		return None
-	if not src.exists() or not src.is_dir():
-		return []
-	return [Path(_) for _ in glob(f'{src}/**/*', recursive=True) if Path(_).is_file()]
+                # Fast split without regex
+                idx = line.find(',')
+                if idx == -1:
+                    idx = line.find(';')
 
-def backup_file(src, dest, resources):
-	print(f'Backing up file {src} to {dest}')
-	try:
-		dest.mkdir(parents=True, exist_ok=True)
-		shutil.copy2(src, dest)
-		resources.append(dest)
-	except:
-		print(f'Error backing up {src} to {dest}')
+                if idx != -1:
+                    src = line[:idx].strip()
+                    dest = line[idx+1:].strip()
+                    pairs.append((src, dest))
+    except Exception as e:
+        print(f'Error reading config: {e}')
 
-def do_backup(lines):
-	resources = []
-	outdir = datetime.now().strftime(os.getenv('DT_FORMAT', '%Y%m%d-%H%M%S'))
+    return pairs
 
-	backup_pair = []
-	for line in lines:
-		src, dest = re.split(f'[,;]', line)
 
-		src = Path(src.strip())
-		if not src.exists():
-			print(f'Resource does not exists: {src}')
-			continue
+def collect_files(src_path, dest_base):
+    tasks = []
 
-		dest = dest.strip()
-		if len(dest) == 0:
-			# When no destination provided, use default defined in .env, else use current directory
-			dest = os.getenv('DEFAULT_BACKUP_DIR', dest)
+    if src_path.is_file():
+        tasks.append((src_path, dest_base))
+    elif src_path.is_dir():
+        # Optimized directory traversal
+        try:
+            for file in src_path.rglob('*'):
+                if file.is_file():
+                    rel_dir = file.relative_to(src_path).parent
+                    tasks.append((file, dest_base / rel_dir))
+        except Exception as e:
+            print(f'Error scanning {src_path}: {e}')
 
-		dest = Path(dest.strip()).expanduser() / outdir
+    return tasks
 
-		files = get_from_src(src)
-		if files is None:
-			backup_pair.append((src, dest))
-		else:
-			for file in files:
-				to_dir = dest / file.relative_to(src)
-				backup_pair.append((file, to_dir.parent))
 
-	with ThreadPoolExecutor(max_workers=8) as executor:
-		for src, dest in backup_pair:
-			executor.submit(backup_file, src, dest, resources)
-	return resources
+def backup_file_fast(src, dest):
+    try:
+        # Create destination directory if needed
+        if not dest.exists():
+            dest.mkdir(parents=True, exist_ok=True)
+
+        # Use copy2 which preserves metadata
+        shutil.copy2(src, dest)
+        return True
+    except Exception as e:
+        print(f'Error backing up {src} to {dest}: {e}')
+        return False
+
+
+def do_backup_optimized(config_path):
+    outdir = datetime.now().strftime(DT_FORMAT)
+
+    config_pairs = parse_config(config_path)
+    if not config_pairs:
+        return 0
+
+    # Collect all backup tasks
+    all_tasks = []
+    for src_str, dest_str in config_pairs:
+        src = Path(src_str)
+
+        if not src.exists():
+            print(f'Resource does not exists: {src}')
+            continue
+
+        # Determine destination
+        dest_base = Path(dest_str if dest_str else DEFAULT_BACKUP_DIR).expanduser() / outdir
+
+        # Collect tasks for this source
+        all_tasks.extend(collect_files(src, dest_base))
+
+    if not all_tasks:
+        return 0
+
+    # Execute backups in parallel with optimized thread pool
+    success_count = 0
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        # Submit all tasks
+        future_to_task = {
+            executor.submit(backup_file_fast, src, dest): (src, dest)
+            for src, dest in all_tasks
+        }
+
+        # Collect results as they complete
+        for future in as_completed(future_to_task):
+            try:
+                if future.result():
+                    success_count += 1
+            except Exception as e:
+                src, dest = future_to_task[future]
+                print(f'Task failed for {src}: {e}')
+
+    return success_count
+
 
 if __name__ == '__main__':
-	start = datetime.now()
+    start = datetime.now()
 
-	files = get_files(os.getenv('CONFIG', 'files.csv'))
-	resources = do_backup(files)
+    count = do_backup_optimized(CONFIG)
 
-	print(f'Backup completed for {len(resources)} resources, took {datetime.now() - start}')
+    elapsed = datetime.now() - start
+    print(f'Backup completed for {count} resources, took {elapsed}')
