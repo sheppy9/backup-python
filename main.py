@@ -11,7 +11,6 @@ CONFIG = os.getenv('CONFIG', 'files.csv')
 DT_FORMAT = os.getenv('DT_FORMAT', '%Y%m%d-%H%M%S')
 DEFAULT_BACKUP_DIR = os.getenv('DEFAULT_BACKUP_DIR', '.')
 
-
 def parse_config(config_path):
     path = Path(config_path).expanduser()
     if not path.is_file():
